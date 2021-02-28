@@ -374,6 +374,8 @@ namespace Microsoft.EntityFrameworkCore.Query
                 => VisitRowNumber(rowNumberExpression, allowOptimizedExpansion, out nullable),
                 ScalarSubqueryExpression scalarSubqueryExpression
                 => VisitScalarSubquery(scalarSubqueryExpression, allowOptimizedExpansion, out nullable),
+                RowExpression rowExpression
+                => VisitRow(rowExpression, allowOptimizedExpansion, out nullable),
                 SqlBinaryExpression sqlBinaryExpression
                 => VisitSqlBinary(sqlBinaryExpression, allowOptimizedExpansion, out nullable),
                 SqlConstantExpression sqlConstantExpression
@@ -803,6 +805,31 @@ namespace Microsoft.EntityFrameworkCore.Query
             nullable = true;
 
             return scalarSubqueryExpression.Update(Visit(scalarSubqueryExpression.Subquery));
+        }
+
+        /// <summary>
+        ///     Visits a <see cref="RowExpression" /> and computes its nullability.
+        /// </summary>
+        /// <param name="rowExpression"> A row expression to visit. </param>
+        /// <param name="allowOptimizedExpansion"> A bool value indicating if optimized expansion which considers null value as false value is allowed. </param>
+        /// <param name="nullable"> A bool value indicating whether the sql expression is nullable. </param>
+        /// <returns> An optimized sql expression. </returns>
+        protected virtual SqlExpression VisitRow(
+            [NotNull] RowExpression rowExpression,
+            bool allowOptimizedExpansion,
+            out bool nullable)
+        {
+            Check.NotNull(rowExpression, nameof(rowExpression));
+
+            nullable = false;
+
+            var arguments = new SqlExpression[rowExpression.Arguments.Count];
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                arguments[i] = Visit(rowExpression.Arguments[i], out _);
+            }
+
+            return rowExpression.Update(arguments);
         }
 
         /// <summary>

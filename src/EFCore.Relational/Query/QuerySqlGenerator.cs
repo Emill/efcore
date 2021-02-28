@@ -1138,5 +1138,25 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             return unionExpression;
         }
+
+        /// <inheritdoc />
+        protected override Expression VisitRow([NotNull] RowExpression rowExpression)
+        {
+            Check.NotNull(rowExpression, nameof(rowExpression));
+
+            _relationalCommandBuilder.Append("ROW(");
+            GenerateList(rowExpression.Arguments, e => Visit(e));
+            _relationalCommandBuilder.Append(")");
+
+            return rowExpression;
+        }
+
+        /// <inheritdoc />
+        protected override Expression VisitArraySubquery([NotNull] ArraySubqueryExpression arraySubqueryExpression)
+        {
+            _relationalCommandBuilder.Append("ARRAY");
+
+            return VisitScalarSubquery(arraySubqueryExpression);
+        }
     }
 }

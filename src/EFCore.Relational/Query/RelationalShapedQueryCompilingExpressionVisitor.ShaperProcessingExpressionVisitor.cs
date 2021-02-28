@@ -50,6 +50,9 @@ namespace Microsoft.EntityFrameworkCore.Query
             private static readonly MethodInfo _includeReferenceMethodInfo
                 = typeof(ShaperProcessingExpressionVisitor).GetRequiredDeclaredMethod(nameof(IncludeReference));
 
+            private static readonly MethodInfo _populateIncludeCollectionArrayMethodInfo
+                = typeof(ShaperProcessingExpressionVisitor).GetRequiredDeclaredMethod(nameof(PopulateIncludeCollectionArray));
+
             private static readonly MethodInfo _initializeIncludeCollectionMethodInfo
                 = typeof(ShaperProcessingExpressionVisitor).GetRequiredDeclaredMethod(nameof(InitializeIncludeCollection));
 
@@ -79,6 +82,9 @@ namespace Microsoft.EntityFrameworkCore.Query
 
             private static readonly MethodInfo _populateSplitCollectionAsyncMethodInfo
                 = typeof(ShaperProcessingExpressionVisitor).GetRequiredDeclaredMethod(nameof(PopulateSplitCollectionAsync));
+
+            private static readonly MethodInfo _populateCollectionArrayMethodInfo
+                = typeof(ShaperProcessingExpressionVisitor).GetRequiredDeclaredMethod(nameof(PopulateCollectionArray));
 
             private static readonly MethodInfo _taskAwaiterMethodInfo
                 = typeof(ShaperProcessingExpressionVisitor).GetRequiredDeclaredMethod(nameof(TaskAwaiter));
@@ -453,7 +459,9 @@ namespace Microsoft.EntityFrameworkCore.Query
                         }
 
                         var projectionIndex = (int)GetProjectionIndex(projectionBindingExpression);
-                        var projection = _selectExpression.Projection[projectionIndex];
+                        var projection = _selectExpression.Projection[0].Expression is RowExpression rowExpression
+                            ? new ProjectionExpression(rowExpression.Arguments[projectionIndex], string.Empty)
+                            : _selectExpression.Projection[projectionIndex];
                         var nullable = IsNullableProjection(projection);
 
                         var valueParameter = Expression.Parameter(projectionBindingExpression.Type);
@@ -497,7 +505,62 @@ namespace Microsoft.EntityFrameworkCore.Query
                     case IncludeExpression includeExpression:
                     {
                         var entity = Visit(includeExpression.EntityExpression);
-                        if (includeExpression.NavigationExpression is RelationalCollectionShaperExpression
+                        if (includeExpression.NavigationExpression is RelationalCollectionArrayShaperExpression
+                            relationalCollectionArrayShaperExpression)
+                        {
+                            var newDataReaderParameter = Expression.Parameter(typeof(object[]), "arrayDataReader");
+
+                            var innerShaper = new ShaperProcessingExpressionVisitor(
+                                    _parentVisitor,
+                                    _resultCoordinatorParameter,
+                                    relationalCollectionArrayShaperExpression.InnerSelectExpression,
+                                    newDataReaderParameter,
+                                    _resultContextParameter,
+                                    null)
+                                .ProcessShaper(relationalCollectionArrayShaperExpression.InnerShaper, out _, out _);
+
+                            var projectionIndex = (int)GetProjectionIndex(relationalCollectionArrayShaperExpression.OuterProjection);
+
+                            Expression valueExpression = CreateGetValueExpression(
+                                _dataReaderParameter,
+                                projectionIndex,
+                                nullable: false,
+                                new RecordArrayTypeMapping(),
+                                typeof(object[][]));
+
+                            var entityType = entity.Type;
+                            var navigation = includeExpression.Navigation;
+                            var includingEntityType = navigation.DeclaringEntityType.ClrType;
+                            if (includingEntityType != entityType
+                                && includingEntityType.IsAssignableFrom(entityType))
+                            {
+                                includingEntityType = entityType;
+                            }
+
+                            var relatedEntityType = innerShaper.ReturnType;
+                            var inverseNavigation = navigation.Inverse;
+
+                            _includeExpressions.Add(
+                                Expression.Call(
+                                    _populateIncludeCollectionArrayMethodInfo.MakeGenericMethod(entityType, includingEntityType, relatedEntityType),
+                                    QueryCompilationContext.QueryContextParameter,
+                                    valueExpression,
+                                    _resultCoordinatorParameter,
+                                    _resultContextParameter,
+                                    entity,
+                                    Expression.Constant(navigation),
+                                    Expression.Constant(navigation.GetCollectionAccessor()),
+                                    Expression.Constant(_isTracking),
+#pragma warning disable EF1001 // Internal EF Core API usage.
+                                    Expression.Constant(includeExpression.SetLoaded),
+#pragma warning restore EF1001 // Internal EF Core API usage.
+                                    Expression.Constant(innerShaper.Compile()),
+                                    Expression.Constant(inverseNavigation, typeof(INavigationBase)),
+                                    Expression.Constant(
+                                        GenerateFixup(
+                                            includingEntityType, relatedEntityType, navigation, inverseNavigation).Compile())));
+                        }
+                        else if (includeExpression.NavigationExpression is RelationalCollectionShaperExpression
                             relationalCollectionShaperExpression)
                         {
                             var innerShaper = new ShaperProcessingExpressionVisitor(
@@ -699,6 +762,59 @@ namespace Microsoft.EntityFrameworkCore.Query
                         return entity;
                     }
 
+                    case RelationalCollectionArrayShaperExpression relationalCollectionArrayShaperExpression:
+                    {
+                        var key = GenerateKey(relationalCollectionArrayShaperExpression);
+                        if (!_variableShaperMapping.TryGetValue(key, out var accessor))
+                        {
+                            var newDataReaderParameter = Expression.Parameter(typeof(object[]), "arrayDataReader");
+
+                            var innerShaper = new ShaperProcessingExpressionVisitor(
+                                    _parentVisitor,
+                                    _resultCoordinatorParameter,
+                                    relationalCollectionArrayShaperExpression.InnerSelectExpression,
+                                    newDataReaderParameter,
+                                    _resultContextParameter,
+                                    null)
+                                .ProcessShaper(relationalCollectionArrayShaperExpression.InnerShaper, out _, out _);
+
+                            var projectionIndex = (int)GetProjectionIndex(relationalCollectionArrayShaperExpression.OuterProjection);
+
+                            Expression valueExpression = CreateGetValueExpression(
+                                _dataReaderParameter,
+                                projectionIndex,
+                                nullable: false,
+                                new RecordArrayTypeMapping(),
+                                typeof(object[][]));
+
+                            var navigation = relationalCollectionArrayShaperExpression.Navigation;
+                            var collectionAccessor = navigation?.GetCollectionAccessor();
+                            var collectionType = collectionAccessor?.CollectionType ?? relationalCollectionArrayShaperExpression.Type;
+                            var elementType = relationalCollectionArrayShaperExpression.ElementType;
+                            var relatedElementType = innerShaper.ReturnType;
+
+                            var collectionParameter = Expression.Parameter(relationalCollectionArrayShaperExpression.Type);
+                            _variables.Add(collectionParameter);
+                            _expressions.Add(
+                                Expression.Assign(
+                                    collectionParameter,
+                                    Expression.Call(
+                                        _populateCollectionArrayMethodInfo.MakeGenericMethod(collectionType, elementType, relatedElementType),
+                                        QueryCompilationContext.QueryContextParameter,
+                                        valueExpression,
+                                        _resultContextParameter,
+                                        _resultCoordinatorParameter,
+                                        Expression.Constant(innerShaper.Compile()),
+                                        Expression.Constant(collectionAccessor, typeof(IClrCollectionAccessor)))));
+
+                            accessor = collectionParameter;
+
+                            _variableShaperMapping[key] = accessor;
+                        }
+
+                        return accessor;
+                    }
+
                     case RelationalCollectionShaperExpression relationalCollectionShaperExpression:
                     {
                         var key = GenerateKey(relationalCollectionShaperExpression);
@@ -894,7 +1010,9 @@ namespace Microsoft.EntityFrameworkCore.Query
                         ? entityTypeIdentifyingExpressionOffsets[mappingParameter]
                         + methodCallExpression.Arguments[1].GetConstantValue<int>()
                         : _materializationContextBindings[mappingParameter][property];
-                    var projection = _selectExpression.Projection[projectionIndex];
+                    var projection = _selectExpression.Projection[0].Expression is RowExpression rowExpression
+                        ? new ProjectionExpression(rowExpression.Arguments[projectionIndex], string.Empty)
+                        : _selectExpression.Projection[projectionIndex];
 
                     var nullable = IsNullableProjection(projection);
 
@@ -984,21 +1102,33 @@ namespace Microsoft.EntityFrameworkCore.Query
                 Check.DebugAssert(
                     property != null || type.IsNullableType(), "Must read nullable value from database if property is not specified.");
 
-                var getMethod = typeMapping.GetDataReaderMethod();
-
                 Expression indexExpression = Expression.Constant(index);
                 if (_indexMapParameter != null)
                 {
                     indexExpression = Expression.ArrayIndex(_indexMapParameter, indexExpression);
                 }
 
-                Expression valueExpression
-                    = Expression.Call(
-                        getMethod.DeclaringType != typeof(DbDataReader)
-                            ? Expression.Convert(dbDataReader, getMethod.DeclaringType!)
-                            : (Expression)dbDataReader,
-                        getMethod,
-                        indexExpression);
+                Expression valueExpression;
+                Expression isNullExpression;
+
+                if (dbDataReader.Type == typeof(object[]))
+                {
+                    valueExpression = Expression.ArrayIndex(dbDataReader, indexExpression);
+                    isNullExpression = Expression.Equal(valueExpression, Expression.Constant(null, typeof(object)));
+                }
+                else
+                {
+                    var getMethod = typeMapping.GetDataReaderMethod();
+
+                    valueExpression
+                        = Expression.Call(
+                            getMethod.DeclaringType != typeof(DbDataReader)
+                                ? Expression.Convert(dbDataReader, getMethod.DeclaringType!)
+                                : (Expression)dbDataReader,
+                            getMethod,
+                            indexExpression);
+                    isNullExpression = Expression.Call(dbDataReader, _isDbNullMethod, indexExpression);
+                }
 
                 var buffering = false;
 
@@ -1065,7 +1195,7 @@ namespace Microsoft.EntityFrameworkCore.Query
                 if (nullable)
                 {
                     valueExpression = Expression.Condition(
-                        Expression.Call(dbDataReader, _isDbNullMethod, indexExpression),
+                        isNullExpression,
                         Expression.Default(valueExpression.Type),
                         valueExpression);
                 }
@@ -1080,7 +1210,9 @@ namespace Microsoft.EntityFrameworkCore.Query
                         Expression.Call(
                             _throwReadValueExceptionMethod.MakeGenericMethod(valueExpression.Type),
                             exceptionParameter,
-                            Expression.Call(dbDataReader, _getFieldValueMethod.MakeGenericMethod(typeof(object)), indexExpression),
+                            dbDataReader.Type == typeof(object[])
+                                ? Expression.ArrayIndex(dbDataReader, indexExpression)
+                                : Expression.Call(dbDataReader, _getFieldValueMethod.MakeGenericMethod(typeof(object)), indexExpression),
                             Expression.Constant(valueExpression.Type.MakeNullable(nullable), typeof(Type)),
                             Expression.Constant(property, typeof(IPropertyBase))));
 
@@ -1536,6 +1668,54 @@ namespace Microsoft.EntityFrameworkCore.Query
                 }
             }
 
+            private static void PopulateIncludeCollectionArray<TParent, TNavigationEntity, TIncludedEntity>(
+                QueryContext queryContext,
+                object[][] dbDataReader,
+                SingleQueryResultCoordinator resultCoordinator,
+                ResultContext resultContext,
+                TParent entity,
+                INavigationBase navigation,
+                IClrCollectionAccessor clrCollectionAccessor,
+                bool trackingQuery,
+                bool setLoaded,
+                Func<QueryContext, object[], ResultContext, SingleQueryResultCoordinator, TIncludedEntity> innerShaper,
+                INavigationBase inverseNavigation,
+                Action<TNavigationEntity, TIncludedEntity> fixup)
+                where TParent : class
+                where TNavigationEntity : class, TParent
+            {
+                if (entity is TNavigationEntity navigationEntity)
+                {
+                    if (setLoaded)
+                    {
+                        if (trackingQuery)
+                        {
+                            queryContext.SetNavigationIsLoaded(entity, navigation);
+                        }
+                        else
+                        {
+                            navigation.SetIsLoadedWhenNoTracking(entity);
+                        }
+                    }
+
+                    clrCollectionAccessor.GetOrCreate(entity, forMaterialization: true);
+
+                    for (var i = 0; i < dbDataReader.Length; i++)
+                    {
+                        var relatedEntity = innerShaper(queryContext, dbDataReader[i], resultContext, resultCoordinator);
+
+                        if (!trackingQuery)
+                        {
+                            fixup(navigationEntity, relatedEntity);
+                            if (inverseNavigation != null)
+                            {
+                                inverseNavigation.SetIsLoadedWhenNoTracking(relatedEntity);
+                            }
+                        }
+                    }
+                }
+            }
+
             private static TCollection InitializeCollection<TElement, TCollection>(
                 int collectionId,
                 QueryContext queryContext,
@@ -1840,6 +2020,26 @@ namespace Microsoft.EntityFrameworkCore.Query
                 }
 
                 dataReaderContext.HasNext = false;
+            }
+
+            private static TCollection PopulateCollectionArray<TCollection, TElement, TRelatedEntity>(
+                QueryContext queryContext,
+                object[][] dbDataReader,
+                ResultContext resultContext,
+                SingleQueryResultCoordinator resultCoordinator,
+                Func<QueryContext, object[], ResultContext, SingleQueryResultCoordinator, TRelatedEntity> innerShaper,
+                IClrCollectionAccessor clrCollectionAccessor)
+                where TRelatedEntity : TElement
+                where TCollection : class, ICollection<TElement>
+            {
+
+                var collection = (TCollection)(clrCollectionAccessor?.Create() ?? new List<TElement>());
+                for (var i = 0; i < dbDataReader.Length; i++)
+                {
+                    collection.Add(innerShaper(queryContext, dbDataReader[i], resultContext, resultCoordinator));
+                }
+
+                return collection;
             }
 
             private static async Task TaskAwaiter(Func<Task>[] taskFactories)

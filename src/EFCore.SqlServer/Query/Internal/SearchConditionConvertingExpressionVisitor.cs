@@ -776,5 +776,33 @@ namespace Microsoft.EntityFrameworkCore.SqlServer.Query.Internal
 
             return unionExpression.Update(source1, source2);
         }
+
+        /// <inheritdoc />
+        protected override Expression VisitRow([NotNull] RowExpression rowExpression)
+        {
+            Check.NotNull(rowExpression, nameof(rowExpression));
+
+            var parentSearchCondition = _isSearchCondition;
+            var arguments = new SqlExpression[rowExpression.Arguments.Count];
+            for (var i = 0; i < arguments.Length; i++)
+            {
+                arguments[i] = (SqlExpression)Visit(rowExpression.Arguments[i]);
+            }
+            _isSearchCondition = parentSearchCondition;
+
+            return ApplyConversion(rowExpression.Update(arguments), condition: false);
+        }
+
+        /// <inheritdoc />
+        protected override Expression VisitArraySubquery([NotNull] ArraySubqueryExpression arraySubqueryExpression)
+        {
+            Check.NotNull(arraySubqueryExpression, nameof(arraySubqueryExpression));
+
+            var parentSearchCondition = _isSearchCondition;
+            var subquery = (SelectExpression)Visit(arraySubqueryExpression.Subquery);
+            _isSearchCondition = parentSearchCondition;
+
+            return ApplyConversion(arraySubqueryExpression.Update(subquery), condition: false);
+        }
     }
 }

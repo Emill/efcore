@@ -46,7 +46,10 @@ namespace Microsoft.EntityFrameworkCore.Query
         {
             query = base.Process(query);
             query = new SelectExpressionProjectionApplyingExpressionVisitor().Visit(query);
-            query = new CollectionJoinApplyingExpressionVisitor((RelationalQueryCompilationContext)QueryCompilationContext).Visit(query);
+            query = ((RelationalQueryCompilationContext)QueryCompilationContext).QuerySplittingBehavior
+                == QuerySplittingBehavior.SplitQuery
+                ? new CollectionJoinApplyingExpressionVisitor((RelationalQueryCompilationContext)QueryCompilationContext).Visit(query)
+                : new CollectionArrayApplyingExpressionVisitor((RelationalQueryCompilationContext)QueryCompilationContext).Visit(query);
             query = new TableAliasUniquifyingExpressionVisitor().Visit(query);
             query = new SelectExpressionPruningExpressionVisitor().Visit(query);
             query = new SqlExpressionSimplifyingExpressionVisitor(RelationalDependencies.SqlExpressionFactory, _useRelationalNulls).Visit(query);

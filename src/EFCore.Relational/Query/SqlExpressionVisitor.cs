@@ -110,6 +110,9 @@ namespace Microsoft.EntityFrameworkCore.Query
                 case SqlParameterExpression sqlParameterExpression:
                     return VisitSqlParameter(sqlParameterExpression);
 
+                case ArraySubqueryExpression arraySubqueryExpression:
+                    return VisitArraySubquery(arraySubqueryExpression);
+
                 case ScalarSubqueryExpression scalarSubqueryExpression:
                     return VisitScalarSubquery(scalarSubqueryExpression);
 
@@ -118,6 +121,9 @@ namespace Microsoft.EntityFrameworkCore.Query
 
                 case UnionExpression unionExpression:
                     return VisitUnion(unionExpression);
+
+                case RowExpression rowExpression:
+                    return VisitRow(rowExpression);
             }
 
             return base.VisitExtension(extensionExpression);
@@ -325,5 +331,19 @@ namespace Microsoft.EntityFrameworkCore.Query
         /// <param name="unionExpression"> The expression to visit. </param>
         /// <returns> The modified expression, if it or any subexpression was modified; otherwise, returns the original expression. </returns>
         protected abstract Expression VisitUnion([NotNull] UnionExpression unionExpression);
+
+        /// <summary>
+        ///     Visits the children of the row expression.
+        /// </summary>
+        /// <param name="rowExpression"> The expression to visit. </param>
+        /// <returns> The modified expression, if it or any subexpression was modified; otherwise, returns the original expression. </returns>
+        protected abstract Expression VisitRow([NotNull] RowExpression rowExpression);
+
+        /// <summary>
+        ///     Visits the children of the array subquery expression.
+        /// </summary>
+        /// <param name="arraySubqueryExpression"> The expression to visit. </param>
+        /// <returns> The modified expression, if it or any subexpression was modified; otherwise, returns the original expression. </returns>
+        protected abstract Expression VisitArraySubquery([NotNull] ArraySubqueryExpression arraySubqueryExpression);
     }
 }

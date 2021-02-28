@@ -1655,6 +1655,52 @@ namespace Microsoft.EntityFrameworkCore.Query.SqlExpressions
             }
         }
 
+        /// <summary>
+        ///     Applies previously added collection projection.
+        /// </summary>
+        /// <param name="collectionIndex"> An int value specifing which collection from pending collection to apply. </param>
+        /// <param name="collectionId"> An int value of unique collection id associated with this collection projection. </param>
+        /// <param name="innerShaper"> A shaper expression to use for shaping the elements of this collection. </param>
+        /// <param name="navigation"> A navigation associated with this collection, if any. </param>
+        /// <param name="elementType"> The type of the element in the collection. </param>
+        /// <returns> An expression which represents shaping of this collection. </returns>
+        public Expression? ApplyCollectionArray(
+            int collectionIndex,
+            int collectionId,
+            [NotNull] Expression innerShaper,
+            [CanBeNull] INavigationBase? navigation,
+            [NotNull] Type elementType)
+        {
+            Check.NotNull(innerShaper, nameof(innerShaper));
+            Check.NotNull(elementType, nameof(elementType));
+
+            var innerSelectExpression = _pendingCollections[collectionIndex]!;
+            _pendingCollections[collectionIndex] = null;
+
+            innerSelectExpression.ApplyProjection();
+            var rowExpression = new RowExpression(innerSelectExpression.Projection.Select(p => p.Expression));
+            innerSelectExpression.ClearProjection();
+            innerSelectExpression.AddToProjection(rowExpression);
+
+            var projectionIndex = AddToProjection(new ArraySubqueryExpression(innerSelectExpression));
+
+            var mapping = innerSelectExpression._projectionMapping
+                .ToDictionary(kv => kv.Key, kv => ((ConstantExpression)kv.Value).Value!);
+
+            innerShaper = new ProjectionBindingExpressionRemappingExpressionVisitor(innerSelectExpression)
+                .RemapProjectionMember(innerShaper, mapping, pendingCollectionOffset: 0);
+
+            innerSelectExpression._projectionMapping.Clear();
+
+            return new RelationalCollectionArrayShaperExpression(
+                collectionId,
+                new ProjectionBindingExpression(this, projectionIndex, typeof(object[])),
+                innerSelectExpression,
+                innerShaper,
+                navigation,
+                elementType);
+        }
+
         private sealed class EntityShaperNullableMarkingExpressionVisitor : ExpressionVisitor
         {
             protected override Expression VisitExtension(Expression extensionExpression)
@@ -2141,6 +2187,11 @@ namespace Microsoft.EntityFrameworkCore.Query.SqlExpressions
                 }
 
                 var currentProjectionMember = projectionBindingExpression.ProjectionMember;
+                if (currentProjectionMember == null)
+                {
+                    // Already remapped in RelationalProjectionBindingExpressionVisitor
+                    return projectionBindingExpression;
+                }
                 var newBinding = _projectionMemberMappings![currentProjectionMember!];
 
                 return CreateNewBinding(newBinding, projectionBindingExpression.Type);
